@@ -1,0 +1,447 @@
+---
+title: "Exam_GENETTAIS_trancriptomics"
+date: "2025-09-12"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  word_document:
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+***
+
+```{=html}
+<style>
+div.blue { background-color:#e6f0ff; border-radius: 5px; padding: 10px;}
+</style>
+```
+
+<style>
+div.blue { 
+  background-color: #e6f0ff; 
+  border-radius: 5px; 
+  padding: 10px;
+}
+</style>
+
+<div class="blue">
+  <p><strong>Objective:</strong> Select one gene (excluding CPAR2_404850) that you find particularly interesting for further biological experiments.</p>
+
+  <p>In your report, please include:</p>
+
+  <ol>
+    <li>A clear explanation of how you identified this gene, so that I can reproduce your analysis.</li>
+    <li>All numerical values related to this gene from both microarray and RNA-seq analyses.</li>
+    <li>A well-structured justification of your gene selection, using:
+      <ul>
+        <li>Statistical arguments</li>
+        <li>Bioinformatics results</li>
+        <li>Biological relevance and context</li>
+      </ul>
+  </ol>
+</div>
+<br>
+
+***
+
+# Search for genes differentially expressed with microarrays and RNA-seq
+
+## Library loading
+
+```{r message=FALSE}
+library(limma)
+library(DESeq2)
+
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(VennDiagram)
+library(ggrepel)
+library(readxl)
+library(tidyr)
+library(tidyverse)
+
+theme_set(theme_classic())
+```
+
+## Threshold selection (for the whole pipeline)
+
+```{r}
+logFCthreshold <- 2 #log2 fold change of 2
+adjPVthreshold <- 0.01 #1% p-value
+```
+
+## Microarrays Differentially Expressed Genes (DEG)
+
+### Load the data 
+
+```{r}
+dataFile <- "/shared/projects/2528_ens_master2lf_fgat/data/microarrays/dataFile_diffAnalysis.txt"
+data <- as.matrix(read.table(dataFile, row.names = 1, header = T))
+```
+
+### Seach for Microarray differentially expressed genes (DEG)
+
+```{r}
+# Linear model estimation 
+fit <- lmFit(data)
+
+# Bayesian statistics to shrink variances and improves power and reliability of the analysis
+limma.res <- eBayes(fit)
+
+# Retrieve result table for all genes
+allgenes.limma <- topTable(limma.res, number = nrow(data)) 
+
+deg_micro <- allgenes.limma[abs(allgenes.limma$logFC) > logFCthreshold & allgenes.limma$adj.P.Val < adjPVthreshold, ] #Table of the DEG with microarray
+```
+
+## RNA-seq DEG
+
+### Load the data 
+
+```{r}
+countData <- read.table("/shared/projects/2528_ens_master2lf_fgat/data/rnaseq/count_data_diffAnalysis_no0counts.txt", row.names = 1, header = TRUE) #Raw counts
+
+colData <- read.table("/shared/projects/2528_ens_master2lf_fgat/data/rnaseq/design.txt", row.names = 1, header = TRUE) #Metadata (biological condition associated to each samples)
+
+dds <- DESeqDataSetFromMatrix(countData = countData,
+                             colData = colData,
+                             design = ~condition) #DEseq2's specific object
+```
+
+### Normalise the data
+
+```{r}
+dds <- estimateSizeFactors(dds)
+
+Raw.data <- melt(log2(counts(dds)+1))
+colnames(Raw.data) <- c("ORF", "Samples","Expr.Val")
+Raw.data <- data.frame(Raw.data,
+                 Condition = c(substr(Raw.data$Samples[1:(4*5788)], 1, 4),
+                               substr(Raw.data$Samples[(4*5788+1):nrow(Raw.data)], 1, 2)))
+
+Norm.data <- melt(log2(counts(dds, normalized=TRUE)+1))
+colnames(Norm.data) <- c("ORF", "Samples","Expr.Val")
+Norm.data <- data.frame(Norm.data,
+                 Condition = c(substr(Norm.data$Samples[1:(4*5788)], 1, 4),
+                               substr(Norm.data$Samples[(4*5788+1):nrow(Norm.data)], 1, 2)))
+
+```
+
+### Variance/Dispersion estimation
+
+```{r fig.align="center", fig.width=8, fig.height=8}
+dds <- estimateDispersions(dds)
+#plotDispEsts(dds)
+```
+
+### Negative binomial wald test implemented by DEseq2
+
+```{r}
+dds <- nbinomWaldTest(dds)
+
+res <- results(dds, contrast=c("condition","H","N")) #results
+
+res_df <- as.data.frame(res) #RNA-seq results as a dataframe
+res_df <- na.omit(res_df)
+
+deg_rnaseq <- res_df[abs(res_df$log2FoldChange) > logFCthreshold & res_df$padj < adjPVthreshold, ] #Table of the DEG with RNA-seq
+```
+
+## Visual representation of the results
+
+```{r}
+genes_rnaseq = row.names(res_df)
+genes_microarray = row.names(allgenes.limma)
+```
+
+```{r, echo=FALSE}
+venn_sets <- list(
+  "RNA-Seq" = genes_rnaseq,
+  "Microarray" = genes_microarray
+)
+
+venn.plot <- venn.diagram(
+  x = venn_sets,
+  filename = NULL,
+  fill = c("skyblue", "red"),
+  alpha = 0.5,
+  cex = 1.5,
+  cat.cex = 1.2,
+  cat.pos = c(-25, 25),          # move labels apart
+  cat.dist = c(0.05, 0.05),      # control label distance
+  cat.col = c("skyblue", "red"), # match text color to circle
+  margin = 0.1
+)
+
+# Draw
+grid.draw(venn.plot)
+```
+
+Most genes were detected by both methods (5399) but some are present in only one dataset. We might want to keep only these 5399 genes but we might loose Differentially Expressed Genes (DEG) present in only one dataset. Let's check this:
+
+```{r, echo=FALSE}
+DEG_rna = row.names(deg_rnaseq)
+DEG_micro = row.names(deg_micro)
+venn_sets <- list(
+  "RNA-Seq" = genes_rnaseq,
+  "Microarray" = genes_microarray,
+  "DEG RNA-Seq" = DEG_rna,
+  "DEG Microarray" = DEG_micro
+)
+
+venn.plot <- venn.diagram(
+  x = venn_sets,
+  filename = NULL,
+  fill = c("skyblue", "red", "yellow", "green"),
+  alpha = 0.5,
+  cex = 1.5,
+  cat.cex = 1.2,
+  margin = 0.1
+)
+
+# Draw
+grid.draw(venn.plot)
+```
+
+There is a total of 213 DEG. 50 were found DE only by microarray, 94 DEG found only DE by RNA-Seq and were removed. The 35 found DE by both platform were kept.
+
+But, we also kept 30 DEG that were only detected by RNA-Seq and 4 DEG only detected by Microarray. These 34 genes are a bit more trickier to handle, because we don't have them in both datasets. 
+
+Among the 4 DEG found only in microarry dataset, ***CPAG_00607*** was in fact also in the RNA-Seq dataset but with name CPAR2_404310. It was found not DE by RNA-Seq so it can be removed. One ***(CPAG_01628)*** was not found on Candida Genome Database (CGD)[http://www.candidagenome.org/] and therefore removed.
+
+Among the 30 DEG found only in the RNA-Seq dataset, 14 are mitochondrial genes (starting by 'CapafMp') found downregulated in hypoxia.
+
+Our analysis will focus on these 67 genes for further inverstigation.
+
+# Functional analysis
+
+We used CGD Gene Ontology Slim Mapper [http://www.candidagenome.org/cgi-bin/GO/goTermMapper] to look at the function, biological process and cellular components of these 30+35+2 = 67 DEG genes. 
+
+We first looked at genes with unknown Gene Ontology: 
+
+  -27 of them had unknown molecular function.
+  
+  -33 had unknown biological process.
+  
+  -39 had unknown cellular component.
+
+## Retrieve the results :
+
+```{r}
+#load the CGD results:
+mf <- read_excel("molecular_function.xls")
+bp <- read_excel("biological_process.xls")
+cc <- read_excel("cellular_component.xls")
+```
+
+```{r}
+expand_GO <- function(df, GO_colname){
+  df %>%
+    # Split multiple genes in the "Gene(s)" column
+    separate_rows(`Gene(s)`, sep = "[, ]+") %>%
+    # Group by each gene
+    group_by(`Gene(s)`) %>%
+    # Collapse all unique GO terms for that gene into a semicolon-separated string
+    summarise(
+      !!GO_colname := paste(unique(`GO term`), collapse = ";"),
+      .groups = "drop"
+    )
+}
+
+# Expand each GO category
+mf_genes <- expand_GO(mf, "MF")
+bp_genes <- expand_GO(bp, "BP")
+cc_genes <- expand_GO(cc, "CC")
+```
+
+```{r}
+DEG_GO <- mf_genes %>%
+  full_join(bp_genes, by = "Gene(s)") %>%
+  full_join(cc_genes, by = "Gene(s)") # Convert in a df with in rows all genes and 3 columns for molecular function, biological process and cellular component.
+```
+
+Then the strategy I choose is to keep genes with known molecular function and unknown biological process (keeping 8 genes at the end):
+
+```{r}
+valid_genes_mf = DEG_GO[!DEG_GO$MF %in% "molecular_function",]$`Gene(s)` #those that have known molecular function
+
+DEG_GO_valid = DEG_GO[DEG_GO$`Gene(s)` %in% valid_genes_mf, ]
+
+valid_genes_bp = DEG_GO_valid[DEG_GO_valid$BP %in% "biological_process",]$`Gene(s)`
+
+DEG_GO_valid = DEG_GO_valid[DEG_GO_valid$`Gene(s)` %in% valid_genes_bp, ]
+valid_genes = DEG_GO_valid$`Gene(s)`
+```
+
+
+```{r}
+# If you want counts per category in each GO type separately
+# Example for Molecular Function (MF)
+mf_counts <- mf_genes[mf_genes$`Gene(s)` %in% valid_genes, ] %>%
+  separate_rows(MF, sep = ";") %>%   # split multiple GO terms
+  group_by(MF) %>%
+  summarise(gene_count = n(), .groups = "drop") %>%
+  arrange(desc(gene_count))
+
+# Plot MF
+ggplot(mf_counts, aes(x = reorder(MF, gene_count), y = gene_count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +  # horizontal bars
+  labs(title = "Number of Genes per Molecular Function (MF)",
+       x = "Molecular Function",
+       y = "Number of Genes") +
+  theme_minimal()
+```
+
+We end up with 8 genes only. They all aslo appear to have unknown Cellular component.
+
+From the 8 genes remaining, 4 are mitochondrial genes that were downregulated and found only in the RNA-seq dataset. I choose to remove the downregulated genes because I'd like to explore more the genes up-regulated during hypoxia.Therefore CPAR2_700940(AOX2), alternative oxidase was also removed.
+
+Indeed, hypoxia is typically encountered by C. parapsilosis during host infection and the up-regulated genes upon hypoxia might be therefore gives insight about infection process. We end up with 3 genes that have been found in both datasets, ***(CPAR2_100830, CPAR2_209460, CPAR2_405780)***
+
+Finally, I choose to select ***CPAR2_100830*** because it had the highest fold change in both dataset (logFC > 4). 
+
+Moreover, CPAR2_209460 and CPAR2_405780 are enzyme respectively implicated in oxidoreduction and carboxy-lyase activity, that figures among the GO functions most found upon hypoxia (according to the original paper by Guida et al. and checked with CGD Gene Ontology Term Finder). I was interested in genes that have a low represented molecular function for further exploratory analysis. 
+
+On the other hand, CPAR2_100830 have expected molecular function in RNA-binding, which is far less common. Both the significance and amplitude of the differential expression of this gene suggest it has a major role in response to hypoxia. Its molecular function (RNA-binding) suggest it could for instance have role in post-transcriptional regulation (stabilize or destabilize transcripts encoding hypoxia-response proteins, control which isoforms are produced) or translational control (promote translation of hypoxia-adaptive mRNAs), etc...
+
+## Volcano plot to visualize the gene of interest
+
+```{r}
+highlight_gene <- "CPAR2_100830"
+df_labels <- res_df[rownames(res_df) %in% highlight_gene, ]
+df_labels$gene <- rownames(df_labels)  # create a column for labels
+
+res_df$signif = "Not significant"
+res_df$signif[res_df$padj < adjPVthreshold] = "Significant"
+res_df$signif[res_df$padj < adjPVthreshold & abs(res_df$log2FoldChange) > logFCthreshold ] = "DEG Significant"
+
+ggplot(data=res_df, aes(x=log2FoldChange, y=-log10(padj)))+
+  geom_point(aes(color = signif), alpha=0.5)+
+  geom_point(data = df_labels, shape = 21, stroke = 1, color = "black", fill = NA, size = 3) +
+  geom_vline(xintercept = c(-logFCthreshold, logFCthreshold), linetype = "dashed", color = "gray") +
+  geom_hline(yintercept = -log10(adjPVthreshold), linetype = "dashed", color = "gray")+
+  scale_color_manual(values = c("red", "gray", "blue"))+
+  labs(x = "log2 Fold Change", y = "-log10 Adjusted p-value")+
+  geom_text_repel(
+    data = df_labels,
+    aes(label = gene),
+    color = "black",
+    size = 5
+  )+
+
+  theme(axis.title.x = element_text(size = 18),
+      axis.title.y = element_text(size = 18),
+      legend.position = "none")
+
+```
+
+```{r}
+df_labels <- allgenes.limma[rownames(allgenes.limma) %in% highlight_gene, ]
+df_labels$gene <- rownames(df_labels)  # create a column for labels
+
+allgenes.limma$signif = "Not significant"
+allgenes.limma$signif[allgenes.limma$adj.P.Val < adjPVthreshold] = "Significant"
+allgenes.limma$signif[allgenes.limma$adj.P.Val < adjPVthreshold & abs(allgenes.limma$logFC) > logFCthreshold ] = "DEG Significant"
+
+ggplot(data=allgenes.limma, aes(x=logFC, y=-log10(adj.P.Val)))+
+  geom_point(aes(color = signif), alpha=0.5)+
+  geom_point(data = df_labels, shape = 21, stroke = 1, color = "black", fill = NA, size = 3) +
+  geom_vline(xintercept = c(-logFCthreshold, logFCthreshold), linetype = "dashed", color = "gray") +
+  geom_hline(yintercept = -log10(adjPVthreshold), linetype = "dashed", color = "gray")+
+  scale_color_manual(values = c("red", "gray", "blue"))+
+  labs(x = "log2 Fold Change", y = "-log10 Adjusted p-value")+
+  geom_text_repel(
+    data = df_labels,
+    aes(label = gene),
+    color = "black",
+    size = 5
+  )+
+
+  theme(axis.title.x = element_text(size = 18),
+      axis.title.y = element_text(size = 18),
+      legend.position = "none")
+
+```
+
+# Further Statistical relevance : reproductibility
+CPAR2_100830 is remarkably enriched upon Hypoxia.
+
+```{r}
+df_labels <- res_df[rownames(res_df) %in% highlight_gene, ]
+df_labels$gene <- rownames(df_labels)  # create a column for labels
+
+ggplot(data = res_df, aes(x=lfcSE, y=log2FoldChange))+
+  geom_point(color="gray", alpha=0.5)+
+  geom_point(data = df_labels, shape = 21, stroke = 1, color = "black", fill = NA, size = 3) +
+  geom_point(data = df_labels, color = "red", size = 3)+
+  geom_hline(yintercept = c(-logFCthreshold, logFCthreshold), linetype = "dashed", color = "gray")+
+  labs(color = "|logFC| > 2", x="Standard error of logFC", y="logFC RNA-seq")+
+  geom_text_repel(
+    data = df_labels,
+    aes(label = gene),
+    color = "black",
+    size = 5
+  )+
+  scale_x_log10()
+```
+
+However, the standard error (for RNA-Seq) is relatively high when compared to other genes:
+
+```{r, echo=FALSE, message=FALSE}
+plot_df <- countData %>%
+  rownames_to_column("gene") %>%
+  filter(gene == highlight_gene) %>%
+  pivot_longer(
+    cols = -gene,
+    names_to = "sample",
+    values_to = "counts"
+  ) %>%
+  mutate(condition = ifelse(grepl("^noO2", sample), "noO2", "O2"))
+```
+
+```{r}
+ggplot(plot_df, aes(x = condition, y = counts, fill = condition)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.5) +
+  geom_jitter(width = 0.2, size = 3, aes(color = condition)) +
+  labs(title = paste("Read counts for", highlight_gene),
+       x = "Condition",
+       y = "Read counts") +
+  theme_light(base_size = 14) +
+  theme(legend.position = "none")
+```
+
+In fact this standard error is mainly influenced by one replicate in normoxic conditions.
+
+# Associated data to the selected gene
+
+```{r}
+count_rna = countData[row.names(countData) %in% highlight_gene, ]
+count_rna
+data_micro = data[row.names(data) %in% highlight_gene,]
+data_micro
+res_rna = res_df[row.names(res_df) %in% highlight_gene, ]
+res_rna
+res_micro = allgenes.limma[row.names(allgenes.limma) %in% highlight_gene, ]
+res_micro
+```
+
+We can note that the results obtains between the 4 replicates for the microarray experiments avec very consistent.
+
+# Reproductibility
+
+```{r}
+#Date
+format(Sys.time(), "%d %B, %Y, %H,%M")
+
+#Packages used
+sessionInfo()
+```
+
+
+
+
